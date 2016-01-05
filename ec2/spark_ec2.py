@@ -160,6 +160,7 @@ setup_external_libs(external_libs)
 
 import boto
 from boto.ec2.blockdevicemapping import BlockDeviceMapping, BlockDeviceType, EBSBlockDeviceType
+from boto.ec2.networkinterface import NetworkInterfaceSpecification, NetworkInterfaceCollection
 from boto import ec2
 
 
@@ -320,6 +321,9 @@ def parse_args():
         "--private-ips", action="store_true", default=False,
         help="Use private IPs for instances rather than public if VPC/subnet " +
              "requires that.")
+    parser.add_option(
+        "--public-ips", action="store_true", default=False,
+        help="Associate public IPs with instances if VPC/subnet requires that.")
     parser.add_option(
         "--instance-initiated-shutdown-behavior", default="stop",
         choices=["stop", "terminate"],
@@ -605,6 +609,13 @@ def launch_cluster(conn, opts, cluster_name):
             block_map[name] = dev
 
     # Launch slaves
+    interface = NetworkInterfaceSpecification(
+        subnet_id=opts.subnet_id,
+        groups=[slave_group.id] + additional_group_ids,
+        associate_public_ip_address=opts.public_ips)
+
+    interfaces = NetworkInterfaceCollection(interface)
+
     if opts.spot_price is not None:
         # Launch spot instances with the requested price
         print("Requesting %d slaves as spot instances with price $%.3f" %
@@ -622,10 +633,9 @@ def launch_cluster(conn, opts, cluster_name):
                 placement=zone,
                 count=num_slaves_this_zone,
                 key_name=opts.key_pair,
-                security_group_ids=[slave_group.id] + additional_group_ids,
                 instance_type=opts.instance_type,
                 block_device_map=block_map,
-                subnet_id=opts.subnet_id,
+                network_interfaces=interfaces,
                 placement_group=opts.placement_group,
                 user_data=user_data_content,
                 instance_profile_name=opts.instance_profile_name)
@@ -673,15 +683,15 @@ def launch_cluster(conn, opts, cluster_name):
         for zone in zones:
             num_slaves_this_zone = get_partition(opts.slaves, num_zones, i)
             if num_slaves_this_zone > 0:
-                slave_res = image.run(
+                slave_res = conn.run_instances(
+                    image_id=opt.ami,
                     key_name=opts.key_pair,
-                    security_group_ids=[slave_group.id] + additional_group_ids,
                     instance_type=opts.instance_type,
                     placement=zone,
                     min_count=num_slaves_this_zone,
                     max_count=num_slaves_this_zone,
                     block_device_map=block_map,
-                    subnet_id=opts.subnet_id,
+                    network_interfaces=interfaces,
                     placement_group=opts.placement_group,
                     user_data=user_data_content,
                     instance_initiated_shutdown_behavior=opts.instance_initiated_shutdown_behavior,
@@ -707,15 +717,23 @@ def launch_cluster(conn, opts, cluster_name):
             master_type = opts.instance_type
         if opts.zone == 'all':
             opts.zone = random.choice(conn.get_all_zones()).name
-        master_res = image.run(
+
+        interface = NetworkInterfaceSpecification(
+            subnet_id=opts.subnet_id,
+            groups=[master_group.id] + additional_group_ids,
+            associate_public_ip_address=opts.public_ips)
+
+        interfaces = NetworkInterfaceCollection(interface)
+
+        master_res = conn.run_instances(
+            image_id=opts.ami,
             key_name=opts.key_pair,
-            security_group_ids=[master_group.id] + additional_group_ids,
+            network_interfaces=interfaces,
             instance_type=master_type,
             placement=opts.zone,
             min_count=1,
             max_count=1,
             block_device_map=block_map,
-            subnet_id=opts.subnet_id,
             placement_group=opts.placement_group,
             user_data=user_data_content,
             instance_initiated_shutdown_behavior=opts.instance_initiated_shutdown_behavior,
